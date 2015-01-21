@@ -1,0 +1,12 @@
+{application, epgsql_wrapper,
+ [
+  {description, "Wrapper for epgsql PostgreSQL driver"},
+  {vsn, "0.1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { epgsql_wrapper, []}},
+  {env, []}
+ ]}.
