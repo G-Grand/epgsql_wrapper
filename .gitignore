@@ -8,3 +8,5 @@ rel
 .idea
 *.iml
 .rebar
+Makefile
+rel
