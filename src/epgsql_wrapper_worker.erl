@@ -8,7 +8,7 @@
 
 %% API
 -export([start_link/1, simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
-  closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1]).
+  closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1, stop/0]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -60,6 +60,9 @@ closePortalOrStatement(Type, Name) when Type == statement; Type == portal ->
   gen_server:call(?SERVER, {close_statement_or_portal, Type, Name}, infinity);
 closePortalOrStatement(_Type, _Name) ->
   {error, badarg}.
+
+stop() ->
+  gen_server:call(?SERVER, stop, infinity).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -160,6 +163,10 @@ handle_call({close_statement_or_portal, Type, Name}, _From, State) ->
   Reply = pgsql:sync(State#state.pg_conn),
   {reply, Reply, State};
 
+handle_call(stop, _From, State) ->
+  Reply = pgsql:close(State#state.pg_conn),
+  {stop, normal, Reply, State};
+
 handle_call(_Request, _From, State) ->
   {reply, ok, State}.
 
@@ -197,8 +204,8 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, State) ->
-  pgsql:close(State#state.pg_conn).
+terminate(_Reason, _State) ->
+  ok.
 
 %%--------------------------------------------------------------------
 %% @private

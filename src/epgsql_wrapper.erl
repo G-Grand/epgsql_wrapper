@@ -3,7 +3,7 @@
 -behaviour(application).
 
 %% Application callbacks
--export([start/2, stop/1]).
+-export([start/2, stop/1, stop/0]).
 
 %% API
 -export([simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
@@ -25,6 +25,7 @@ start(_StartType, _StartArgs) ->
     epgsql_wrapper_sup:start_link([Args]).
 
 stop(_State) ->
+    epgsql_wrapper_worker:stop(),
     lager:stop(),
     ok.
 
@@ -55,3 +56,6 @@ closeStatement(Statement) ->
 
 closePortalOrStatement(Type, Name) ->
     epgsql_wrapper_worker:closePortalOrStatement(Type, Name).
+
+stop() ->
+    stop([]).
