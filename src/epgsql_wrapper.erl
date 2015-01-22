@@ -6,7 +6,8 @@
 -export([start/2, stop/1]).
 
 %% API
--export([simpleQuery/1, extendedQuery/2]).
+-export([simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
+    closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1]).
 
 %% ===================================================================
 %% Application callbacks
@@ -36,3 +37,21 @@ simpleQuery(SQL) ->
 
 extendedQuery(SQL, Params) ->
     epgsql_wrapper_worker:extendedQuery(SQL, Params).
+
+prepareStatement(Name, SQL, ParamsTypes) ->
+    epgsql_wrapper_worker:prepareStatement(Name, SQL, ParamsTypes).
+
+bindToStatement(Statement, PortalName, ParamsVals) ->
+    epgsql_wrapper_worker:bindToStatement(Statement, PortalName, ParamsVals).
+
+executeStatement(Statement, PortalName, MaxRows) ->
+    epgsql_wrapper_worker:executeStatement(Statement, PortalName, MaxRows).
+
+batchExecuteStatements(BatchData) ->
+    epgsql_wrapper_worker:batchExecuteStatements(BatchData).
+
+closeStatement(Statement) ->
+    epgsql_wrapper_worker:closeStatement(Statement).
+
+closePortalOrStatement(Type, Name) ->
+    epgsql_wrapper_worker:closePortalOrStatement(Type, Name).

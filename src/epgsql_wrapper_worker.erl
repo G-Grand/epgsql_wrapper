@@ -7,7 +7,8 @@
 -include_lib("epgsql/include/pgsql.hrl").
 
 %% API
--export([start_link/1, simpleQuery/1, extendedQuery/2]).
+-export([start_link/1, simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
+  closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -39,6 +40,26 @@ simpleQuery(SQL) ->
 
 extendedQuery(SQL, Params) ->
   gen_server:call(?SERVER, {extended_query, SQL, Params}, infinity).
+
+prepareStatement(Name, SQL, ParamsTypes) ->
+  gen_server:call(?SERVER, {prepare_statement, Name, SQL, ParamsTypes}, infinity).
+
+bindToStatement(Statement, PortalName, ParamsVals) ->
+  gen_server:call(?SERVER, {bind_to_statement, Statement, PortalName, ParamsVals}, infinity).
+
+executeStatement(Statement, PortalName, MaxRows) ->
+  gen_server:call(?SERVER, {exec_statement, Statement, PortalName, MaxRows}, infinity).
+
+batchExecuteStatements(BatchData) ->
+  gen_server:call(?SERVER, {batch_exec_statements, BatchData}, infinity).
+
+closeStatement(Statement) ->
+  gen_server:call(?SERVER, {close_statement, Statement}, infinity).
+
+closePortalOrStatement(Type, Name) when Type == statement; Type == portal ->
+  gen_server:call(?SERVER, {close_statement_or_portal, Type, Name}, infinity);
+closePortalOrStatement(_Type, _Name) ->
+  {error, badarg}.
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -113,6 +134,32 @@ handle_call({extended_query, SQL, Params}, _From, State) ->
   end,
   {reply, Reply, State};
 
+handle_call({prepare_statement, Name, SQL, ParamsTypes}, _From, State) ->
+  Reply = pgsql:parse(State#state.pg_conn, Name, SQL, ParamsTypes),
+  {reply, Reply, State};
+
+handle_call({bind_to_statement, Statement, PortalName, ParamsVals}, _From, State) ->
+  Reply = pgsql:bind(State#state.pg_conn, Statement, PortalName, ParamsVals),
+  {reply, Reply, State};
+
+handle_call({exec_statement, Statement, PortalName, MaxRows}, _From, State) ->
+  Reply = pgsql:execute(State#state.pg_conn, Statement, PortalName, MaxRows),
+  {reply, Reply, State};
+
+handle_call({batch_exec_statements, BatchData}, _From, State) ->
+  Reply = pgsql:execute_batch(State#state.pg_conn, BatchData),
+  {reply, Reply, State};
+
+handle_call({close_statement, Statement}, _From, State) ->
+  ok = pgsql:close(State#state.pg_conn, Statement),
+  Reply = pgsql:sync(State#state.pg_conn),
+  {reply, Reply, State};
+
+handle_call({close_statement_or_portal, Type, Name}, _From, State) ->
+  ok = pgsql:close(State#state.pg_conn, Type, Name),
+  Reply = pgsql:sync(State#state.pg_conn),
+  {reply, Reply, State};
+
 handle_call(_Request, _From, State) ->
   {reply, ok, State}.
 
@@ -150,8 +197,8 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, _State) ->
-  ok.
+terminate(_Reason, State) ->
+  pgsql:close(State#state.pg_conn).
 
 %%--------------------------------------------------------------------
 %% @private
