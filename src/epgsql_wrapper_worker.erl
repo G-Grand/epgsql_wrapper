@@ -7,7 +7,7 @@
 -include_lib("epgsql/include/pgsql.hrl").
 
 %% API
--export([start_link/1, simpleQuery/1]).
+-export([start_link/1, simpleQuery/1, extendedQuery/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -36,6 +36,9 @@ start_link(Args) ->
 
 simpleQuery(SQL) ->
   gen_server:call(?SERVER, {simple_query, SQL}, infinity).
+
+extendedQuery(SQL, Params) ->
+  gen_server:call(?SERVER, {extended_query, SQL, Params}, infinity).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -71,6 +74,35 @@ init(Args) ->
 %%--------------------------------------------------------------------
 handle_call({simple_query, SQL}, _From, State) ->
   QueryRes = pgsql:squery(State#state.pg_conn, SQL),
+  Reply = case QueryRes of
+    SomeResult when is_list(SomeResult) == true ->
+      BatchResultsParser = fun(BatchItem) ->
+        case BatchItem of
+          {ok, Columns, Rows} ->
+            {ok, mapResult(Columns, Rows)};
+          {ok, Count, Columns, Rows} ->
+            {ok, Count, mapResult(Columns, Rows)};
+          _ ->
+            BatchItem
+        end
+      end,
+      {ok, batch_res, lists:map(BatchResultsParser, SomeResult)};
+    {ok, Columns, Rows} ->
+      {ok, mapResult(Columns, Rows)};
+    {ok, Count, Columns, Rows} ->
+      {ok, Count, mapResult(Columns, Rows)};
+    _ ->
+      QueryRes
+  end,
+  {reply, Reply, State};
+
+handle_call({extended_query, SQL, Params}, _From, State) ->
+  QueryRes = case Params of
+    [] ->
+      pgsql:equery(State#state.pg_conn, SQL);
+    _ ->
+      pgsql:equery(State#state.pg_conn, SQL, Params)
+  end,
   Reply = case QueryRes of
     {ok, Columns, Rows} ->
       {ok, mapResult(Columns, Rows)};

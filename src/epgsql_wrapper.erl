@@ -6,7 +6,7 @@
 -export([start/2, stop/1]).
 
 %% API
--export([simpleQuery/1]).
+-export([simpleQuery/1, extendedQuery/2]).
 
 %% ===================================================================
 %% Application callbacks
@@ -33,3 +33,6 @@ stop(_State) ->
 
 simpleQuery(SQL) ->
     epgsql_wrapper_worker:simpleQuery(SQL).
+
+extendedQuery(SQL, Params) ->
+    epgsql_wrapper_worker:extendedQuery(SQL, Params).
