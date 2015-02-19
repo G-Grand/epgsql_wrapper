@@ -1,13 +1,9 @@
--module(epgsql_wrapper_worker).
+-module(epgsql_wrapper_manager).
 
 -behaviour(gen_server).
 
--compile([{parse_transform, lager_transform}]).
-
--include_lib("epgsql/include/pgsql.hrl").
-
 %% API
--export([start_link/1, simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
+-export([start_link/1, startConn/0, simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
   closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1, stop/0]).
 
 %% gen_server callbacks
@@ -19,8 +15,10 @@
   code_change/3]).
 
 -define(SERVER, ?MODULE).
+-define(STATE, state).
+-define(CONN_POOL, pgsql_pool).
 
--record(state, { pg_conn = null }).
+-record(state, { mode = plain, args = null }).
 
 %%%===================================================================
 %%% API
@@ -33,7 +31,10 @@
 %% @end
 %%--------------------------------------------------------------------
 start_link(Args) ->
-  gen_server:start_link(?MODULE, Args, []).
+  gen_server:start_link({local, ?SERVER}, ?MODULE, Args, []).
+
+startConn() ->
+  gen_server:call(?SERVER, start, infinity).
 
 simpleQuery(SQL) ->
   gen_server:call(?SERVER, {simple_query, SQL}, infinity).
@@ -80,14 +81,8 @@ stop() ->
 %% @end
 %%--------------------------------------------------------------------
 init(Args) ->
-  Host = proplists:get_value(host, Args, "localhost"),
-  Port = proplists:get_value(port, Args, 5432),
-  User = proplists:get_value(user, Args, "user"),
-  Pass = proplists:get_value(pass, Args, "pass"),
-  Db = proplists:get_value(db, Args, "test"),
-  Timeout = proplists:get_value(timeout, Args, 5000),
-  {ok, Conn} = pgsql:connect(Host, User, Pass, [{database, Db}, {port, Port}, {timeout, Timeout}]),
-  {ok, #state{ pg_conn = Conn}}.
+  Mode = proplists:get_value(mode, Args, plain),
+  {ok, #state{ mode = Mode, args = Args }}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -96,75 +91,133 @@ init(Args) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
-handle_call({simple_query, SQL}, _From, State) ->
-  QueryRes = pgsql:squery(State#state.pg_conn, SQL),
-  Reply = case QueryRes of
-    SomeResult when is_list(SomeResult) == true ->
-      BatchResultsParser = fun(BatchItem) ->
-        case BatchItem of
-          {ok, Columns, Rows} ->
-            {ok, mapResult(Columns, Rows)};
-          {ok, Count, Columns, Rows} ->
-            {ok, Count, mapResult(Columns, Rows)};
-          _ ->
-            BatchItem
-        end
-      end,
-      {ok, batch_res, lists:map(BatchResultsParser, SomeResult)};
-    {ok, Columns, Rows} ->
-      {ok, mapResult(Columns, Rows)};
-    {ok, Count, Columns, Rows} ->
-      {ok, Count, mapResult(Columns, Rows)};
-    _ ->
-      QueryRes
+
+handle_call(start, _From, State) ->
+  Mode = State#state.mode,
+  Args = State#state.args,
+  case Mode of
+    plain ->
+      epgsql_wrapper_sup:add_child(epgsql_wrapper_worker, worker, [Args]);
+    pool ->
+      PoolSize = proplists:get_value(pool_size, Args, 1),
+      PoolArgs = [{?CONN_POOL, [{size, PoolSize }, {max_overflow, 0 }], Args}],
+      epgsql_wrapper_pool_sup:start_link(PoolArgs)
   end,
+  {reply, ok, State};
+
+handle_call({simple_query, SQL}, _From, State) ->
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {simple_query, SQL}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {simple_query, SQL}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call({extended_query, SQL, Params}, _From, State) ->
-  QueryRes = case Params of
-    [] ->
-      pgsql:equery(State#state.pg_conn, SQL);
-    _ ->
-      pgsql:equery(State#state.pg_conn, SQL, Params)
-  end,
-  Reply = case QueryRes of
-    {ok, Columns, Rows} ->
-      {ok, mapResult(Columns, Rows)};
-    {ok, Count, Columns, Rows} ->
-      {ok, Count, mapResult(Columns, Rows)};
-    _ ->
-      QueryRes
-  end,
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {extended_query, SQL, Params}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {extended_query, SQL, Params}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call({prepare_statement, Name, SQL, ParamsTypes}, _From, State) ->
-  Reply = pgsql:parse(State#state.pg_conn, Name, SQL, ParamsTypes),
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {prepare_statement, Name, SQL, ParamsTypes}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {prepare_statement, Name, SQL, ParamsTypes}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call({bind_to_statement, Statement, PortalName, ParamsVals}, _From, State) ->
-  Reply = pgsql:bind(State#state.pg_conn, Statement, PortalName, ParamsVals),
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {bind_to_statement, Statement, PortalName, ParamsVals}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {bind_to_statement, Statement, PortalName, ParamsVals}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call({exec_statement, Statement, PortalName, MaxRows}, _From, State) ->
-  Reply = pgsql:execute(State#state.pg_conn, Statement, PortalName, MaxRows),
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {exec_statement, Statement, PortalName, MaxRows}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {exec_statement, Statement, PortalName, MaxRows}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call({batch_exec_statements, BatchData}, _From, State) ->
-  Reply = pgsql:execute_batch(State#state.pg_conn, BatchData),
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {batch_exec_statements, BatchData}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {batch_exec_statements, BatchData}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call({close_statement, Statement}, _From, State) ->
-  ok = pgsql:close(State#state.pg_conn, Statement),
-  Reply = pgsql:sync(State#state.pg_conn),
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {close_statement, Statement}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {close_statement, Statement}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call({close_statement_or_portal, Type, Name}, _From, State) ->
-  ok = pgsql:close(State#state.pg_conn, Type, Name),
-  Reply = pgsql:sync(State#state.pg_conn),
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {close_statement_or_portal, Type, Name}, infinity);
+      pool ->
+        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {close_statement_or_portal, Type, Name}, infinity)
+        end, infinity)
+    end,
   {reply, Reply, State};
 
 handle_call(stop, _From, State) ->
-  Reply = pgsql:close(State#state.pg_conn),
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, stop, infinity);
+      pool ->
+        poolboy:stop(?CONN_POOL)
+    end,
   {stop, normal, Reply, State};
 
 handle_call(_Request, _From, State) ->
@@ -221,17 +274,3 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-mapResult([], _Rows) ->
-  [];
-mapResult(_Columns, []) ->
-  [];
-mapResult(Columns, Rows) ->
-  ColumnsExtractor = fun(Elem) ->
-    Elem#column.name
-  end,
-  ColsNames = lists:map(ColumnsExtractor, Columns),
-  ResultsMapper = fun(Row) ->
-    lists:zip(ColsNames, tuple_to_list(Row))
-  end,
-  lists:map(ResultsMapper, Rows).
