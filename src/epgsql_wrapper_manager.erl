@@ -3,7 +3,8 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/1, startConn/0, simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
+-export([start_link/1, startConn/0, simpleQuery/1, simpleQueryAsync/2, simpleQueryIterator/2, extendedQuery/2,
+  extendedQueryAsync/3, extendedQueryIterator/3, prepareStatement/3, bindToStatement/3, executeStatement/3,
   closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1, stop/0]).
 
 %% gen_server callbacks
@@ -39,8 +40,20 @@ startConn() ->
 simpleQuery(SQL) ->
   gen_server:call(?SERVER, {simple_query, SQL}, infinity).
 
+simpleQueryAsync(SQL, Caller) ->
+  gen_server:call(?SERVER, {simple_query_async, SQL, Caller}, infinity).
+
+simpleQueryIterator(SQL, Caller) ->
+  gen_server:call(?SERVER, {simple_query_it, SQL, Caller}, infinity).
+
 extendedQuery(SQL, Params) ->
   gen_server:call(?SERVER, {extended_query, SQL, Params}, infinity).
+
+extendedQueryAsync(SQL, Params, Caller) ->
+  gen_server:call(?SERVER, {extended_query_async, SQL, Params, Caller}, infinity).
+
+extendedQueryIterator(SQL, Params, Caller) ->
+  gen_server:call(?SERVER, {extended_query_it, SQL, Params, Caller}, infinity).
 
 prepareStatement(Name, SQL, ParamsTypes) ->
   gen_server:call(?SERVER, {prepare_statement, Name, SQL, ParamsTypes}, infinity).
@@ -112,8 +125,34 @@ handle_call({simple_query, SQL}, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {simple_query, SQL}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {simple_query, SQL}, infinity)
+        end, infinity)
+    end,
+  {reply, Reply, State};
+
+handle_call({simple_query_async, SQL, Caller}, _From, State) ->
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {simple_query_async, SQL, Caller}, infinity);
+      pool ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {simple_query_async, SQL, Caller}, infinity)
+        end, infinity)
+    end,
+  {reply, Reply, State};
+
+handle_call({simple_query_it, SQL, Caller}, _From, State) ->
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {simple_query_it, SQL, Caller}, infinity);
+      pool ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {simple_query_it, SQL, Caller}, infinity)
         end, infinity)
     end,
   {reply, Reply, State};
@@ -125,8 +164,34 @@ handle_call({extended_query, SQL, Params}, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {extended_query, SQL, Params}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {extended_query, SQL, Params}, infinity)
+        end, infinity)
+    end,
+  {reply, Reply, State};
+
+handle_call({extended_query_async, SQL, Params, Caller}, _From, State) ->
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {extended_query_async, SQL, Params, Caller}, infinity);
+      pool ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {extended_query_async, SQL, Params, Caller}, infinity)
+        end, infinity)
+    end,
+  {reply, Reply, State};
+
+handle_call({extended_query_it, SQL, Params, Caller}, _From, State) ->
+  Reply =
+    case State#state.mode of
+      plain ->
+        [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
+        gen_server:call(WorkerPid, {extended_query_it, SQL, Params, Caller}, infinity);
+      pool ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
+          gen_server:call(Worker, {extended_query_it, SQL, Params, Caller}, infinity)
         end, infinity)
     end,
   {reply, Reply, State};
@@ -138,7 +203,7 @@ handle_call({prepare_statement, Name, SQL, ParamsTypes}, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {prepare_statement, Name, SQL, ParamsTypes}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {prepare_statement, Name, SQL, ParamsTypes}, infinity)
         end, infinity)
     end,
@@ -151,7 +216,7 @@ handle_call({bind_to_statement, Statement, PortalName, ParamsVals}, _From, State
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {bind_to_statement, Statement, PortalName, ParamsVals}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {bind_to_statement, Statement, PortalName, ParamsVals}, infinity)
         end, infinity)
     end,
@@ -164,7 +229,7 @@ handle_call({exec_statement, Statement, PortalName, MaxRows}, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {exec_statement, Statement, PortalName, MaxRows}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {exec_statement, Statement, PortalName, MaxRows}, infinity)
         end, infinity)
     end,
@@ -177,7 +242,7 @@ handle_call({batch_exec_statements, BatchData}, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {batch_exec_statements, BatchData}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {batch_exec_statements, BatchData}, infinity)
         end, infinity)
     end,
@@ -190,7 +255,7 @@ handle_call({close_statement, Statement}, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {close_statement, Statement}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {close_statement, Statement}, infinity)
         end, infinity)
     end,
@@ -203,7 +268,7 @@ handle_call({close_statement_or_portal, Type, Name}, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, {close_statement_or_portal, Type, Name}, infinity);
       pool ->
-        poolboy:transaction(?CONN_POOL, fun(Worker) ->
+        rtc_lib_poolboy:transaction(?CONN_POOL, fun(Worker) ->
           gen_server:call(Worker, {close_statement_or_portal, Type, Name}, infinity)
         end, infinity)
     end,
@@ -216,7 +281,7 @@ handle_call(stop, _From, State) ->
         [{worker_pid, WorkerPid}] = ets:lookup(?STATE, worker_pid),
         gen_server:call(WorkerPid, stop, infinity);
       pool ->
-        poolboy:stop(?CONN_POOL)
+        rtc_lib_poolboy:stop(?CONN_POOL)
     end,
   {stop, normal, Reply, State};
 

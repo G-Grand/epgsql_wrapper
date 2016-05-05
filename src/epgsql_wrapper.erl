@@ -6,8 +6,9 @@
 -export([start/2, stop/1, stop/0]).
 
 %% API
--export([simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
-    closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1]).
+-export([simpleQuery/1, simpleQueryAsync/2, simpleQueryIterator/2, extendedQuery/2, extendedQueryAsync/3,
+  extendedQueryIterator/3,prepareStatement/3, bindToStatement/3, executeStatement/3, closeStatement/1,
+  closePortalOrStatement/2, batchExecuteStatements/1]).
 
 -define(STATE, state).
 
@@ -16,12 +17,12 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    lager:start(),
+    %%lager:start(),
     ets:new(?STATE, [named_table, set, public]),
     Host = application:get_env(epgsql_wrapper, host, "localhost"),
-    Port = application:get_env(epgsql_wrapper, port, 5432),
-    User = application:get_env(epgsql_wrapper, user, "user"),
-    Pass = application:get_env(epgsql_wrapper, pass, "pass"),
+    Port = application:get_env(epgsql_wrapper, port, 5433),
+    User = application:get_env(epgsql_wrapper, user, "postgres"),
+    Pass = application:get_env(epgsql_wrapper, pass, "postgres"),
     Db = application:get_env(epgsql_wrapper, db, "test"),
     Timeout = application:get_env(epgsql_wrapper, timeout, 5000),
     Mode = application:get_env(epgsql_wrapper, mode, plain),
@@ -43,8 +44,20 @@ stop(_State) ->
 simpleQuery(SQL) ->
   epgsql_wrapper_manager:simpleQuery(SQL).
 
+simpleQueryAsync(SQL, Caller) ->
+  epgsql_wrapper_manager:simpleQueryAsync(SQL, Caller).
+
+simpleQueryIterator(SQL, Caller) ->
+  epgsql_wrapper_manager:simpleQueryIterator(SQL, Caller).
+
 extendedQuery(SQL, Params) ->
   epgsql_wrapper_manager:extendedQuery(SQL, Params).
+
+extendedQueryAsync(SQL, Params, Caller) ->
+  epgsql_wrapper_manager:extendedQueryAsync(SQL, Params, Caller).
+
+extendedQueryIterator(SQL, Params, Caller) ->
+  epgsql_wrapper_manager:extendedQueryIterator(SQL, Params, Caller).
 
 prepareStatement(Name, SQL, ParamsTypes) ->
   epgsql_wrapper_manager:prepareStatement(Name, SQL, ParamsTypes).

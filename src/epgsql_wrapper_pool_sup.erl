@@ -45,7 +45,7 @@ start_link(Args) ->
 init(Args) ->
   PoolSpecsCreator = fun({Name, SizeArgs, WorkerArgs}) ->
     PoolArgs = [{name, {local, Name}}, {worker_module, epgsql_wrapper_worker}] ++ SizeArgs,
-    poolboy:child_spec(Name, PoolArgs, WorkerArgs)
+    rtc_lib_poolboy:child_spec(Name, PoolArgs, WorkerArgs)
   end,
   PoolSpecs = lists:map(PoolSpecsCreator, Args),
 
@@ -60,7 +60,7 @@ init(Args) ->
 createChildSpecs(Args) ->
   PoolSpecsCreator = fun({Name, SizeArgs, WorkerArgs}) ->
     PoolArgs = [{name, {local, Name}}, {worker_module, epgsql_wrapper_worker}] ++ SizeArgs,
-    poolboy:child_spec(Name, PoolArgs, WorkerArgs)
+    rtc_lib_poolboy:child_spec(Name, PoolArgs, WorkerArgs)
   end,
   [Specs | _] = lists:map(PoolSpecsCreator, Args),
   Specs.

@@ -2,13 +2,14 @@
 
 -behaviour(gen_server).
 
--compile([{parse_transform, lager_transform}]).
+-compile([{parse_transform}]).
 
 -include_lib("epgsql/include/pgsql.hrl").
 
 %% API
--export([start_link/1, simpleQuery/1, extendedQuery/2, prepareStatement/3, bindToStatement/3, executeStatement/3,
-  closeStatement/1, closePortalOrStatement/2, batchExecuteStatements/1, stop/0]).
+-export([start_link/1, simpleQuery/1, simpleQueryAsync/2, simpleQueryIterator/2, extendedQuery/2, extendedQueryAsync/3,
+  extendedQueryIterator/3, prepareStatement/3, bindToStatement/3, executeStatement/3, closeStatement/1,
+  closePortalOrStatement/2, batchExecuteStatements/1, stop/0]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -20,7 +21,7 @@
 
 -define(SERVER, ?MODULE).
 
--record(state, { pg_conn = null }).
+-record(state, { pg_conn = null, async_queries_refs = [] }).
 
 %%%===================================================================
 %%% API
@@ -38,8 +39,20 @@ start_link(Args) ->
 simpleQuery(SQL) ->
   gen_server:call(?SERVER, {simple_query, SQL}, infinity).
 
+simpleQueryAsync(SQL, Caller) ->
+  gen_server:call(?SERVER, {simple_query_async, SQL, Caller}, infinity).
+
+simpleQueryIterator(SQL, Caller) ->
+  gen_server:call(?SERVER, {simple_query_it, SQL, Caller}, infinity).
+
 extendedQuery(SQL, Params) ->
   gen_server:call(?SERVER, {extended_query, SQL, Params}, infinity).
+
+extendedQueryAsync(SQL, Params, Caller) ->
+  gen_server:call(?SERVER, {extended_query_async, SQL, Params, Caller}, infinity).
+
+extendedQueryIterator(SQL, Params, Caller) ->
+  gen_server:call(?SERVER, {extended_query_it, SQL, Params, Caller}, infinity).
 
 prepareStatement(Name, SQL, ParamsTypes) ->
   gen_server:call(?SERVER, {prepare_statement, Name, SQL, ParamsTypes}, infinity).
@@ -81,9 +94,9 @@ stop() ->
 %%--------------------------------------------------------------------
 init(Args) ->
   Host = proplists:get_value(host, Args, "localhost"),
-  Port = proplists:get_value(port, Args, 5432),
-  User = proplists:get_value(user, Args, "user"),
-  Pass = proplists:get_value(pass, Args, "pass"),
+  Port = proplists:get_value(port, Args, 5433),
+  User = proplists:get_value(user, Args, "postgres"),
+  Pass = proplists:get_value(pass, Args, "postgres"),
   Db = proplists:get_value(db, Args, "test"),
   Timeout = proplists:get_value(timeout, Args, 5000),
   {ok, Conn} = pgsql:connect(Host, User, Pass, [{database, Db}, {port, Port}, {timeout, Timeout}]),
@@ -120,6 +133,30 @@ handle_call({simple_query, SQL}, _From, State) ->
   end,
   {reply, Reply, State};
 
+handle_call({simple_query_async, SQL, Caller}, _From, State) ->
+  QRef = apgsql:squery(State#state.pg_conn, SQL),
+  QueryExists = proplists:is_defined(QRef, State#state.async_queries_refs),
+  NewQRefs =
+    if
+      QueryExists == true ->
+        lists:keyreplace(QRef, 1, State#state.async_queries_refs, {QRef, Caller});
+      true ->
+        State#state.async_queries_refs ++ [{QRef, Caller}]
+    end,
+  {reply, {ok, QRef}, State#state{ async_queries_refs = NewQRefs}};
+
+handle_call({simple_query_it, SQL, Caller}, _From, State) ->
+  QRef = ipgsql:squery(State#state.pg_conn, SQL),
+  QueryExists = proplists:is_defined(QRef, State#state.async_queries_refs),
+  NewQRefs =
+    if
+      QueryExists == true ->
+        lists:keyreplace(QRef, 1, State#state.async_queries_refs, {QRef, Caller});
+      true ->
+        State#state.async_queries_refs ++ [{QRef, Caller}]
+    end,
+  {reply, {ok, QRef}, State#state{ async_queries_refs = NewQRefs}};
+
 handle_call({extended_query, SQL, Params}, _From, State) ->
   QueryRes = case Params of
     [] ->
@@ -136,6 +173,43 @@ handle_call({extended_query, SQL, Params}, _From, State) ->
       QueryRes
   end,
   {reply, Reply, State};
+
+handle_call({extended_query_async, SQL, Params, Caller}, _From, State) ->
+  QRef =
+    case Params of
+      [] ->
+        apgsql:equery(State#state.pg_conn, SQL);
+      _ ->
+        apgsql:equery(State#state.pg_conn, SQL, Params)
+    end,
+  QueryExists = proplists:is_defined(QRef, State#state.async_queries_refs),
+  NewQRefs =
+    if
+      QueryExists == true ->
+        lists:keyreplace(QRef, 1, State#state.async_queries_refs, {QRef, Caller});
+      true ->
+        State#state.async_queries_refs ++ [{QRef, Caller}]
+    end,
+  {reply, {ok, QRef}, State#state{ async_queries_refs = NewQRefs}};
+
+handle_call({extended_query_it, SQL, Params, Caller}, _From, State) ->
+  {ok, Statement} = pgsql:parse(State#state.pg_conn, "", SQL, []),
+  QRef =
+    case Params of
+      [] ->
+        ipgsql:equery(State#state.pg_conn, Statement);
+      _ ->
+        ipgsql:equery(State#state.pg_conn, Statement, Params)
+    end,
+  QueryExists = proplists:is_defined(QRef, State#state.async_queries_refs),
+  NewQRefs =
+    if
+      QueryExists == true ->
+        lists:keyreplace(QRef, 1, State#state.async_queries_refs, {QRef, Caller});
+      true ->
+        State#state.async_queries_refs ++ [{QRef, Caller}]
+    end,
+  {reply, {ok, QRef}, State#state{ async_queries_refs = NewQRefs}};
 
 handle_call({prepare_statement, Name, SQL, ParamsTypes}, _From, State) ->
   Reply = pgsql:parse(State#state.pg_conn, Name, SQL, ParamsTypes),
@@ -190,8 +264,37 @@ handle_cast(_Request, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info(_Info, State) ->
-  {noreply, State}.
+handle_info({Conn, Ref, {columns, _Columns} = Result}, #state{ pg_conn = Conn } = State) ->
+  {Ref, Caller} = lists:keyfind(Ref, 1, State#state.async_queries_refs),
+  Caller ! {Ref, Result},
+  {noreply, State};
+handle_info({Conn, Ref, {data, _Row} = Result}, #state{ pg_conn = Conn } = State) ->
+  {Ref, Caller} = lists:keyfind(Ref, 1, State#state.async_queries_refs),
+  Caller ! {Ref, Result},
+  {noreply, State};
+handle_info({Conn, Ref, {error, _E} = Result}, #state{ pg_conn = Conn } = State) ->
+  {Ref, Caller} = lists:keyfind(Ref, 1, State#state.async_queries_refs),
+  Caller ! {Ref, Result},
+  NewQRefs = lists:keydelete(Ref, 1, State#state.async_queries_refs),
+  {noreply, State#state{async_queries_refs = NewQRefs}};
+handle_info({Conn, Ref, {complete, {_Type, _Count}} = Result}, #state{ pg_conn = Conn } = State) ->
+  {Ref, Caller} = lists:keyfind(Ref, 1, State#state.async_queries_refs),
+  Caller ! {Ref, Result},
+  {noreply, State};
+handle_info({Conn, Ref, {complete, _Type} = Result}, #state{ pg_conn = Conn } = State) ->
+  {Ref, Caller} = lists:keyfind(Ref, 1, State#state.async_queries_refs),
+  Caller ! {Ref, Result},
+  {noreply, State};
+handle_info({Conn, Ref, done}, #state{ pg_conn = Conn } = State) ->
+  {Ref, Caller} = lists:keyfind(Ref, 1, State#state.async_queries_refs),
+  Caller ! {Ref, done},
+  NewQRefs = lists:keydelete(Ref, 1, State#state.async_queries_refs),
+  {noreply, State#state{async_queries_refs = NewQRefs}};
+handle_info({Conn, Ref, Result}, #state{ pg_conn = Conn } = State) ->
+  {Ref, Caller} = lists:keyfind(Ref, 1, State#state.async_queries_refs),
+  Caller ! {Ref, Result},
+  NewQRefs = lists:keydelete(Ref, 1, State#state.async_queries_refs),
+  {noreply, State#state{async_queries_refs = NewQRefs}}.
 
 %%--------------------------------------------------------------------
 %% @private
